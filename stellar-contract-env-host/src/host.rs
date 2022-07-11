@@ -370,23 +370,15 @@ impl Host {
     }
 
     #[cfg(feature = "testutils")]
-    pub fn push_test_frame(&self, id: Object) -> Result<FrameGuard, HostError> {
-        let contract_id = self.visit_obj(id, |b: &Vec<u8>| {
-            Ok(Hash(b.clone().try_into().map_err(|_| {
-                HostError::WithStatus(
-                    String::from("not a binary object"),
-                    ScStatus::HostObjectError(ScHostObjErrorCode::UnexpectedType),
-                )
-            })?))
-        })?;
+    pub(crate) fn push_test_frame(&self, contract_id: Hash) -> FrameGuard {
         self.0
             .context
             .borrow_mut()
             .push(Frame::TestContract(contract_id));
-        Ok(FrameGuard {
+        FrameGuard {
             rollback: Some(self.capture_rollback_point()),
             host: self.clone(),
-        })
+        }
     }
 
     /// Applies a function to the top [`Frame`] of the context stack. Returns
@@ -796,7 +788,10 @@ impl Host {
         #[cfg(feature = "testutils")]
         if let Some(vtable) = self.0.vtables.borrow().get(&id) {
             if let Some(f) = vtable.0.get(&func) {
-                Some(Ok(f.0.call(args)))
+                let mut frame_guard = self.push_test_frame(id.clone());
+                let res = Some(Ok(f.0.call(args)));
+                frame_guard.commit();
+                res
             } else {
                 Some(Err(HostError::General("function not in vtable")))
             }

@@ -11,8 +11,6 @@ pub mod storage;
 #[cfg(test)]
 mod test;
 
-#[cfg(feature = "testutils")]
-pub use host::FrameGuard;
 pub use host::{Host, HostError};
 pub use im_rc;
 pub use stellar_contract_env_common::*;
