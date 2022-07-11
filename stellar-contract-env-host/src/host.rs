@@ -179,6 +179,8 @@ struct RollbackPoint {
 
 #[cfg(feature = "testutils")]
 pub trait ClonableContractVTableFn {
+    fn call(&self, args: &[RawVal]) -> RawVal;
+
     fn clone_box(&self) -> Box<dyn ClonableContractVTableFn>;
 }
 
@@ -187,6 +189,10 @@ pub struct ContractVTableFn(pub Box<dyn ClonableContractVTableFn>);
 
 #[cfg(feature = "testutils")]
 impl ClonableContractVTableFn for &'static dyn Fn(&[RawVal]) -> RawVal {
+    fn call(&self, args: &[RawVal]) -> RawVal {
+        self(args)
+    }
+
     fn clone_box(&self) -> Box<dyn ClonableContractVTableFn> {
         Box::new(self.clone())
     }
@@ -781,18 +787,30 @@ impl Host {
         Ok(id_obj)
     }
 
+    fn try_call_vtable(
+        &self,
+        id: &Hash,
+        func: &Symbol,
+        args: &[RawVal],
+    ) -> Option<Result<RawVal, HostError>> {
+        #[cfg(feature = "testutils")]
+        if let Some(vtable) = self.0.vtables.borrow().get(&id) {
+            if let Some(f) = vtable.0.get(&func) {
+                Some(Ok(f.0.call(args)))
+            } else {
+                Some(Err(HostError::General("function not in vtable")))
+            }
+        } else {
+            None
+        }
+
+        #[cfg(not(feature = "testutils"))]
+        None
+    }
+
     #[cfg(feature = "vm")]
-    fn call_n(&self, contract: Object, func: Symbol, args: &[RawVal]) -> Result<RawVal, HostError> {
+    fn call_vm(&self, id: &Hash, func: &Symbol, args: &[RawVal]) -> Result<RawVal, HostError> {
         // Create key for storage
-        let id = self.visit_obj(contract, |bin: &Vec<u8>| {
-            let arr: [u8; 32] = bin.as_slice().try_into().map_err(|_| {
-                HostError::WithStatus(
-                    String::from("invalid contract hash"),
-                    ScStatus::HostObjectError(ScHostObjErrorCode::ContractHashWrongLength),
-                )
-            })?;
-            Ok(xdr::Hash(arr))
-        })?;
         let key = ScVal::Static(ScStatic::LedgerKeyContractCodeWasm);
         let storage_key = LedgerKey::ContractData(LedgerKeyContractData {
             contract_id: id.clone(),
@@ -824,18 +842,43 @@ impl Host {
                 ))
             }
         };
-        let vm = Vm::new(self, id, code.as_slice())?;
+        let vm = Vm::new(self, id.clone(), code.as_slice())?;
         // Resolve the function symbol and invoke contract call
         vm.invoke_function_raw(self, SymbolStr::from(func).as_ref(), args)
+    }
+
+    fn try_call_vm(
+        &self,
+        id: &Hash,
+        func: &Symbol,
+        args: &[RawVal],
+    ) -> Option<Result<RawVal, HostError>> {
+        #[cfg(feature = "vm")]
+        return Some(self.call_vm(id, func, args));
+        #[cfg(not(feature = "vm"))]
+        return None;
+    }
+
+    fn call_n(&self, contract: Object, func: Symbol, args: &[RawVal]) -> Result<RawVal, HostError> {
+        // Get contract ID
+        let id = self.visit_obj(contract, |bin: &Vec<u8>| {
+            let arr: [u8; 32] = bin.as_slice().try_into().map_err(|_| {
+                HostError::WithStatus(
+                    String::from("invalid contract hash"),
+                    ScStatus::HostObjectError(ScHostObjErrorCode::ContractHashWrongLength),
+                )
+            })?;
+            Ok(xdr::Hash(arr))
+        })?;
+
+        self.try_call_vtable(&id, &func, args)
+            .or_else(|| self.try_call_vm(&id, &func, args))
+            .unwrap_or_else(|| unimplemented!())
     }
 
     pub fn invoke_function(&mut self, hf: HostFunction, args: ScVec) -> Result<ScVal, HostError> {
         match hf {
             HostFunction::Call => {
-                #[cfg(not(feature = "vm"))]
-                unimplemented!();
-
-                #[cfg(feature = "vm")]
                 if let [ScVal::Object(Some(scobj)), ScVal::Symbol(scsym), rest @ ..] =
                     args.as_slice()
                 {
@@ -1415,21 +1458,13 @@ impl CheckedEnv for Host {
     }
 
     fn call(&self, contract: Object, func: Symbol, args: Object) -> Result<RawVal, HostError> {
-        #[cfg(not(feature = "vm"))]
-        todo!();
-        #[cfg(feature = "vm")]
-        {
-            let args: Vec<RawVal> = self.visit_obj(args, |hv: &HostVec| {
-                Ok(hv.iter().map(|a| a.to_raw()).collect())
-            })?;
-            self.call_n(contract, func, args.as_slice())
-        }
+        let args: Vec<RawVal> = self.visit_obj(args, |hv: &HostVec| {
+            Ok(hv.iter().map(|a| a.to_raw()).collect())
+        })?;
+        self.call_n(contract, func, args.as_slice())
     }
 
     fn try_call(&self, contract: Object, func: Symbol, args: Object) -> Result<RawVal, HostError> {
-        #[cfg(not(feature = "vm"))]
-        todo!();
-        #[cfg(feature = "vm")]
         match self.call(contract, func, args) {
             Ok(rv) => Ok(rv),
             Err(e) => {
