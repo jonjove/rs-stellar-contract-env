@@ -178,22 +178,22 @@ struct RollbackPoint {
 }
 
 #[cfg(feature = "testutils")]
-pub trait ClonableContractVTableFn {
+pub trait ContractVTableFnTrait {
     fn call(&self, args: &[RawVal]) -> RawVal;
 
-    fn clone_box(&self) -> Box<dyn ClonableContractVTableFn>;
+    fn clone_box(&self) -> Box<dyn ContractVTableFnTrait>;
 }
 
 #[cfg(feature = "testutils")]
-pub struct ContractVTableFn(pub Box<dyn ClonableContractVTableFn>);
+pub struct ContractVTableFn(pub Box<dyn ContractVTableFnTrait>);
 
 #[cfg(feature = "testutils")]
-impl ClonableContractVTableFn for &'static dyn Fn(&[RawVal]) -> RawVal {
+impl ContractVTableFnTrait for &'static dyn Fn(&[RawVal]) -> RawVal {
     fn call(&self, args: &[RawVal]) -> RawVal {
         self(args)
     }
 
-    fn clone_box(&self) -> Box<dyn ClonableContractVTableFn> {
+    fn clone_box(&self) -> Box<dyn ContractVTableFnTrait> {
         Box::new(self.clone())
     }
 }
